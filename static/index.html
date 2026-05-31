@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Token-Monitor</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="icon" href="data:image/svg+xml;utf8,&lt;svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'&gt;&lt;text y='52' font-size='52'&gt;📊&lt;/text&gt;&lt;/svg&gt;">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">📊</span>
+      <h1>Token-Monitor</h1>
+      <span class="subtitle">Claude Code Usage Analytics</span>
+    </div>
+    <div class="controls">
+      <label class="range-picker">
+        Zeitraum:
+        <select id="range">
+          <option value="24h">Letzte 24h</option>
+          <option value="7d" selected>Letzte 7 Tage</option>
+          <option value="30d">Letzte 30 Tage</option>
+          <option value="90d">Letzte 90 Tage</option>
+          <option value="all">Alles</option>
+        </select>
+      </label>
+      <button id="refresh" title="Daten neu laden">↻ Aktualisieren</button>
+      <span id="status-led" class="led" title="Status">●</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="kpi-grid" id="kpi-grid">
+      <!-- KPI cards injected by JS -->
+    </section>
+
+    <section class="grid-2">
+      <div class="card">
+        <h2>Tokens über Zeit</h2>
+        <div class="chart-wrap"><canvas id="chart-tokens"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>Kosten pro Tag (USD)</h2>
+        <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
+      </div>
+    </section>
+
+    <section class="grid-2">
+      <div class="card">
+        <h2>Modell-Anteile (Kosten)</h2>
+        <div class="chart-wrap"><canvas id="chart-models"></canvas></div>
+      </div>
+      <div class="card">
+        <h2>Top Tools (Aufrufe)</h2>
+        <div class="chart-wrap"><canvas id="chart-tools"></canvas></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>💡 Optimierungs-Empfehlungen</h2>
+      <div id="recommendations" class="recommendations">
+        <p class="muted">Lade...</p>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Aktivität nach Wochentag / Uhrzeit</h2>
+      <div id="heatmap" class="heatmap"></div>
+    </section>
+
+    <section class="card">
+      <h2>Sessions</h2>
+      <div class="table-wrap">
+        <table id="sessions-table">
+          <thead>
+            <tr>
+              <th>Letzte Aktivität</th>
+              <th>Projekt</th>
+              <th>Session</th>
+              <th class="num">Requests</th>
+              <th class="num">Tokens</th>
+              <th class="num">Kosten ($)</th>
+              <th>Modelle</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Aufschlüsselung</h2>
+      <div class="breakdown-controls">
+        <label>Dimension:
+          <select id="breakdown-dim">
+            <option value="model">Modell</option>
+            <option value="project">Projekt</option>
+            <option value="agent">Agent</option>
+            <option value="skill">Skill</option>
+            <option value="mcp">MCP Server</option>
+            <option value="query_source">Query Source</option>
+            <option value="speed">Speed</option>
+            <option value="effort">Effort</option>
+            <option value="source">Datenquelle</option>
+          </select>
+        </label>
+      </div>
+      <div class="table-wrap">
+        <table id="breakdown-table">
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th class="num">Requests</th>
+              <th class="num">Tokens</th>
+              <th class="num">Kosten ($)</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <span id="health-info">Lade Health-Status...</span>
+      <span class="footer-right">
+        <a href="https://code.claude.com/docs/en/monitoring-usage" target="_blank" rel="noopener">Claude Code Monitoring Docs</a>
+      </span>
+    </footer>
+  </main>
+
+  <div id="session-modal" class="modal hidden">
+    <div class="modal-content">
+      <button class="modal-close" id="modal-close">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <script src="/vendor/chart.umd.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
