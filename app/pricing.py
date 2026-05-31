@@ -30,14 +30,19 @@ def cost_for(
     output_tokens: int = 0,
     cache_read_tokens: int = 0,
     cache_creation_tokens: int = 0,
+    provider: str = "anthropic",
 ) -> float:
     """Return total USD cost for the given token mix.
 
-    Unknown models fall through to the configured fallback model rates.
+    Unknown models fall through to the provider-specific fallback, then the
+    global fallback.
     """
     table = _table()
     models = table.get("models", {})
-    fallback_key = table.get("fallback", "claude-sonnet-4-6")
+    fallback_key = (
+        table.get(f"fallback_{provider}")
+        or table.get("fallback", "claude-sonnet-4-6")
+    )
     rates = models.get(model or "") or models.get(fallback_key) or {
         "input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_creation": 3.75,
     }

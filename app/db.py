@@ -38,13 +38,15 @@ CREATE TABLE IF NOT EXISTS api_requests (
     effort TEXT,
     speed TEXT,
     project_path TEXT,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'anthropic'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_api_request_id_uq
     ON api_requests(request_id);
 CREATE INDEX IF NOT EXISTS idx_api_ts ON api_requests(timestamp);
 CREATE INDEX IF NOT EXISTS idx_api_session ON api_requests(session_id);
 CREATE INDEX IF NOT EXISTS idx_api_model ON api_requests(model);
+CREATE INDEX IF NOT EXISTS idx_api_provider ON api_requests(provider);
 
 CREATE TABLE IF NOT EXISTS tool_results (
     id INTEGER PRIMARY KEY,
@@ -52,19 +54,21 @@ CREATE TABLE IF NOT EXISTS tool_results (
     session_id TEXT,
     prompt_id TEXT,
     tool_use_id TEXT,
-    tool_name TEXT NOT NULL,
+    tool_name TEXT,
     success INTEGER,
     duration_ms INTEGER,
     error_type TEXT,
     tool_input_size_bytes INTEGER,
     tool_result_size_bytes INTEGER,
     project_path TEXT,
-    source TEXT NOT NULL
+    source TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'anthropic'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_use_uq
     ON tool_results(tool_use_id);
 CREATE INDEX IF NOT EXISTS idx_tool_ts ON tool_results(timestamp);
 CREATE INDEX IF NOT EXISTS idx_tool_name ON tool_results(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_provider ON tool_results(provider);
 
 CREATE TABLE IF NOT EXISTS prompts (
     id INTEGER PRIMARY KEY,
@@ -130,6 +134,29 @@ def _connect(path: Path = DB_PATH) -> sqlite3.Connection:
 def init_db() -> None:
     with _connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Lightweight ALTER TABLE migrations for older DBs.
+
+    SQLite is happy with re-adding the same column to fail, so we probe
+    pragma_table_info first and only ALTER when missing.
+    """
+    def _has_column(table: str, col: str) -> bool:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return any(r["name"] == col for r in rows)
+
+    if not _has_column("api_requests", "provider"):
+        conn.execute(
+            "ALTER TABLE api_requests ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_api_provider ON api_requests(provider)")
+    if not _has_column("tool_results", "provider"):
+        conn.execute(
+            "ALTER TABLE tool_results ADD COLUMN provider TEXT NOT NULL DEFAULT 'anthropic'"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_provider ON tool_results(provider)")
 
 
 @contextmanager
@@ -169,8 +196,9 @@ def upsert_api_request(row: dict[str, Any]) -> None:
         "input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens",
         "cost_usd", "duration_ms", "query_source", "agent_name", "skill_name",
         "plugin_name", "mcp_server", "mcp_tool", "effort", "speed",
-        "project_path", "source",
+        "project_path", "source", "provider",
     ]
+    row = {**row, "provider": row.get("provider") or "anthropic"}
     values = [row.get(c) for c in cols]
     placeholders = ", ".join("?" for _ in cols)
     col_list = ", ".join(cols)
@@ -215,8 +243,9 @@ def insert_tool_result(row: dict[str, Any]) -> None:
     cols = [
         "timestamp", "session_id", "prompt_id", "tool_use_id", "tool_name",
         "success", "duration_ms", "error_type", "tool_input_size_bytes",
-        "tool_result_size_bytes", "project_path", "source",
+        "tool_result_size_bytes", "project_path", "source", "provider",
     ]
+    row = {**row, "provider": row.get("provider") or "anthropic"}
     values = [row.get(c) for c in cols]
     placeholders = ", ".join("?" for _ in cols)
     col_list = ", ".join(cols)

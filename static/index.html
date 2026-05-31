@@ -16,6 +16,14 @@
     </div>
     <div class="controls">
       <label class="range-picker">
+        Provider:
+        <select id="provider">
+          <option value="">Alle</option>
+          <option value="anthropic">Claude Code</option>
+          <option value="openai">OpenAI Codex</option>
+        </select>
+      </label>
+      <label class="range-picker">
         Zeitraum:
         <select id="range">
           <option value="24h">Letzte 24h</option>
@@ -44,6 +52,11 @@
         <h2>Kosten pro Tag (USD)</h2>
         <div class="chart-wrap"><canvas id="chart-cost"></canvas></div>
       </div>
+    </section>
+
+    <section class="card">
+      <h2>Provider-Vergleich: Anthropic vs. OpenAI</h2>
+      <div class="chart-wrap"><canvas id="chart-providers"></canvas></div>
     </section>
 
     <section class="grid-2">
@@ -76,6 +89,7 @@
           <thead>
             <tr>
               <th>Letzte Aktivität</th>
+              <th>Provider</th>
               <th>Projekt</th>
               <th>Session</th>
               <th class="num">Requests</th>
@@ -95,6 +109,7 @@
         <label>Dimension:
           <select id="breakdown-dim">
             <option value="model">Modell</option>
+            <option value="provider">Provider</option>
             <option value="project">Projekt</option>
             <option value="agent">Agent</option>
             <option value="skill">Skill</option>

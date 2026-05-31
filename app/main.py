@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import db, jsonl_importer
+from . import codex_importer, db, jsonl_importer
 from .api import router as api_router
 from .config import STATIC_DIR
 from .otlp_receiver import router as otlp_router
@@ -37,16 +37,18 @@ log = logging.getLogger("token_monitor")
 async def lifespan(app: FastAPI):
     db.init_db()
     log.info("Database initialized at %s", db.DB_PATH)
-    importer_task = asyncio.create_task(jsonl_importer.importer_loop())
-    log.info("JSONL importer task scheduled")
+    claude_task = asyncio.create_task(jsonl_importer.importer_loop())
+    codex_task = asyncio.create_task(codex_importer.importer_loop())
+    log.info("Importer tasks scheduled (Claude + Codex)")
     try:
         yield
     finally:
-        importer_task.cancel()
-        try:
-            await importer_task
-        except asyncio.CancelledError:
-            pass
+        for t in (claude_task, codex_task):
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(

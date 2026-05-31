@@ -23,6 +23,13 @@ CLAUDE_PROJECTS_DIR = Path(
     )
 )
 
+CODEX_SESSIONS_DIR = Path(
+    os.environ.get(
+        "TOKEN_MONITOR_CODEX_SESSIONS_DIR",
+        str(Path.home() / ".codex" / "sessions"),
+    )
+)
+
 SERVER_HOST = os.environ.get("TOKEN_MONITOR_HOST", "127.0.0.1")
 SERVER_PORT = int(os.environ.get("TOKEN_MONITOR_PORT", "8765"))
 

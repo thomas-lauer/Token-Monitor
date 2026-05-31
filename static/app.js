@@ -6,8 +6,26 @@
 
   const state = {
     range: "7d",
+    provider: "",
     charts: {},
   };
+
+  const PROVIDER_LABELS = {
+    "anthropic": "Claude Code",
+    "openai": "OpenAI Codex",
+  };
+  const PROVIDER_COLORS = {
+    "anthropic": "#d97757",
+    "openai": "#10a37f",
+  };
+
+  function providerLabel(p) {
+    return PROVIDER_LABELS[p] || p || "—";
+  }
+
+  function pquery() {
+    return state.provider ? `&provider=${encodeURIComponent(state.provider)}` : "";
+  }
 
   // ---------- helpers ----------
   function $(sel) { return document.querySelector(sel); }
@@ -48,8 +66,14 @@
 
   // ---------- KPIs ----------
   function renderKpis(s) {
+    const providers = s.providers || [];
+    const claudeCost = (providers.find(p => p.provider === "anthropic") || {}).cost_usd || 0;
+    const codexCost = (providers.find(p => p.provider === "openai") || {}).cost_usd || 0;
+
     const cards = [
       ["Gesamtkosten",      fmtUsd(s.total_cost_usd), `${s.requests || 0} Requests`],
+      ["Claude Code",       fmtUsd(claudeCost), `${(providers.find(p => p.provider === "anthropic") || {}).requests || 0} Requests`],
+      ["OpenAI Codex",      fmtUsd(codexCost), `${(providers.find(p => p.provider === "openai") || {}).requests || 0} Requests`],
       ["Gesamt-Tokens",     fmtTokens(s.total_tokens), `${fmtTokens(s.input_tokens)} in / ${fmtTokens(s.output_tokens)} out`],
       ["Cache-Hit-Rate",    fmtPct(s.cache_hit_rate || 0), `${fmtTokens(s.cache_read_tokens)} aus Cache`],
       ["Sessions",          String(s.sessions || 0), `Ø ${fmtUsd(s.avg_cost_per_session || 0)} / Session`],
@@ -108,6 +132,27 @@
         }],
       },
       options: chartOpts({ valueFmt: (v) => "$" + v.toFixed(2) }),
+    });
+  }
+
+  function renderProvidersChart(data) {
+    destroyChart("providers");
+    const ctx = $("#chart-providers").getContext("2d");
+    state.charts.providers = new Chart(ctx, {
+      type: "bar",
+      data: {
+        labels: data.labels,
+        datasets: data.series.map((s) => ({
+          label: providerLabel(s.name),
+          data: s.data,
+          backgroundColor: PROVIDER_COLORS[s.name] || "#888",
+          stack: "providers",
+        })),
+      },
+      options: chartOpts({
+        stacked: true,
+        valueFmt: (v) => "$" + Number(v).toFixed(2),
+      }),
     });
   }
 
@@ -249,6 +294,10 @@
     for (const r of rows) {
       const tr = el("tr");
       tr.appendChild(el("td", { textContent: fmtDate(r.last_seen_at) }));
+      const pBadge = el("span", { className: "badge", textContent: providerLabel(r.provider) });
+      pBadge.style.background = (PROVIDER_COLORS[r.provider] || "#888") + "33";
+      pBadge.style.color = PROVIDER_COLORS[r.provider] || "#aaa";
+      tr.appendChild(el("td", {}, [pBadge]));
       tr.appendChild(el("td", { textContent: r.project_path || "—" }));
       tr.appendChild(el("td", { textContent: (r.session_id || "").slice(0, 8) }));
       tr.appendChild(el("td", { className: "num", textContent: String(r.requests || 0) }));
@@ -263,12 +312,13 @@
   // ---------- Breakdown ----------
   async function renderBreakdown() {
     const dim = $("#breakdown-dim").value;
-    const data = await jget(`/api/breakdown?range=${state.range}&dim=${dim}&limit=30`);
+    const data = await jget(`/api/breakdown?range=${state.range}&dim=${dim}&limit=30${pquery()}`);
     const tbody = $("#breakdown-table tbody");
     tbody.innerHTML = "";
     for (const r of data.rows) {
       const tr = el("tr");
-      tr.appendChild(el("td", { textContent: r.label }));
+      const label = dim === "provider" ? providerLabel(r.label) : r.label;
+      tr.appendChild(el("td", { textContent: label }));
       tr.appendChild(el("td", { className: "num", textContent: String(r.requests) }));
       tr.appendChild(el("td", { className: "num", textContent: fmtTokens(r.tokens) }));
       tr.appendChild(el("td", { className: "num", textContent: fmtUsd(r.cost_usd) }));
@@ -362,20 +412,24 @@
   // ---------- Refresh ----------
   async function refreshAll() {
     state.range = $("#range").value;
+    state.provider = $("#provider").value || "";
+    const p = pquery();
     try {
-      const [summary, timeseriesTokens, timeseriesCost, models, tools, recs, sessions, heatmap] = await Promise.all([
-        jget(`/api/summary?range=${state.range}`),
-        jget(`/api/timeseries?range=${state.range}&metric=tokens&bucket=day`),
-        jget(`/api/timeseries?range=${state.range}&metric=cost&bucket=day`),
-        jget(`/api/breakdown?range=${state.range}&dim=model&limit=10`),
-        jget(`/api/tools?range=${state.range}&limit=20`),
-        jget(`/api/recommendations?range=${state.range}`),
-        jget(`/api/sessions?range=${state.range}&limit=100`),
-        jget(`/api/heatmap?range=${state.range === "24h" ? "7d" : state.range}`),
+      const [summary, timeseriesTokens, timeseriesCost, providersTS, models, tools, recs, sessions, heatmap] = await Promise.all([
+        jget(`/api/summary?range=${state.range}${p}`),
+        jget(`/api/timeseries?range=${state.range}&metric=tokens&bucket=day${p}`),
+        jget(`/api/timeseries?range=${state.range}&metric=cost&bucket=day${p}`),
+        jget(`/api/timeseries?range=${state.range}&metric=cost&bucket=day&groupBy=provider${p}`),
+        jget(`/api/breakdown?range=${state.range}&dim=model&limit=10${p}`),
+        jget(`/api/tools?range=${state.range}&limit=20${p}`),
+        jget(`/api/recommendations?range=${state.range}${p}`),
+        jget(`/api/sessions?range=${state.range}&limit=100${p}`),
+        jget(`/api/heatmap?range=${state.range === "24h" ? "7d" : state.range}${p}`),
       ]);
       renderKpis(summary);
       renderTokensChart(timeseriesTokens);
       renderCostChart(timeseriesCost);
+      renderProvidersChart(providersTS);
       renderModelsChart(models.rows);
       renderToolsChart(tools.rows);
       renderRecommendations(recs.items);
@@ -392,6 +446,7 @@
   // ---------- Boot ----------
   document.addEventListener("DOMContentLoaded", () => {
     $("#range").addEventListener("change", refreshAll);
+    $("#provider").addEventListener("change", refreshAll);
     $("#refresh").addEventListener("click", refreshAll);
     $("#breakdown-dim").addEventListener("change", renderBreakdown);
     $("#modal-close").addEventListener("click", () => $("#session-modal").classList.add("hidden"));

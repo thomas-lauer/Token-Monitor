@@ -1,6 +1,6 @@
 # Token-Monitor
 
-> Lokales Windows-Tool, das den Token-Verbrauch von [Claude Code](https://claude.com/claude-code) aufzeichnet, übersichtlich visualisiert und konkrete Optimierungs-Empfehlungen ausspricht.
+> Lokales Windows-Tool, das den Token-Verbrauch von [Claude Code](https://claude.com/claude-code) **und [OpenAI Codex CLI](https://github.com/openai/codex)** aufzeichnet, übersichtlich visualisiert und konkrete Optimierungs-Empfehlungen ausspricht.
 
 ![status](https://img.shields.io/badge/status-alpha-orange) ![python](https://img.shields.io/badge/python-3.10%2B-blue) ![license](https://img.shields.io/badge/license-MIT-green) ![platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 
@@ -9,9 +9,14 @@
 ## Was es kann
 
 - 📈 **Live-Dashboard** im Browser mit Token-Verlauf, Kosten pro Tag, Modell-Aufteilung, Top-Tools, Heatmap und Sessions
+- 🔄 **Multi-Provider**: Claude Code + OpenAI Codex parallel — vergleich beide Tools auf einem Blick
 - 🧠 **Empfehlungs-Engine** mit 9 Heuristik-Regeln (Cache-Hit-Rate, Modellauswahl, Effort-Overuse, lange Sessions, Subagent-Overhead, …) inklusive geschätzter monatlicher Ersparnis
 - 🔌 **OpenTelemetry-Receiver** (OTLP/HTTP) gemäß der [offiziellen Doku](https://code.claude.com/docs/en/monitoring-usage) — Claude Code sendet Metrics + Logs direkt an `http://localhost:8765`
-- 📚 **JSONL-Importer** für deine bestehenden `~/.claude/projects/*.jsonl`-Transcripts — auch ohne aktivierte OTel-Pipeline siehst du _historische_ Daten ab dem ersten Start
+- 📚 **JSONL-Importer** für deine bestehenden Transcripts in
+  - `~/.claude/projects/*.jsonl` (Claude Code)
+  - `~/.codex/sessions/yyyy/mm/dd/rollout-*.jsonl` (OpenAI Codex CLI)
+  
+  Auch ohne aktivierte OTel-Pipeline siehst du _historische_ Daten ab dem ersten Start
 - 💾 **SQLite-Backend** — keine Cloud, keine Auth, alles lokal in `data/events.db`
 
 ## Architektur
@@ -104,9 +109,9 @@ Komplett entfernen: zusätzlich den `Token-Monitor`-Ordner löschen.
 
 ## Datenquellen
 
-Token-Monitor kombiniert _zwei_ Quellen, dedupliziert auf `request_id`:
+Token-Monitor kombiniert _drei_ Quellen, dedupliziert auf `request_id`:
 
-### 1. OpenTelemetry (Live)
+### 1. OpenTelemetry (Claude Code, Live)
 
 Sobald Claude Code die OTel-Variablen sieht, sendet es alle 5–10 Sekunden:
 
@@ -115,9 +120,21 @@ Sobald Claude Code die OTel-Variablen sieht, sendet es alle 5–10 Sekunden:
 
 Genaue Definitionen: <https://code.claude.com/docs/en/monitoring-usage>
 
-### 2. JSONL-Transcripts (historisch)
+### 2. Claude Code JSONL-Transcripts (historisch)
 
 Claude Code schreibt jede Session als JSONL nach `~/.claude/projects/<projekt>/<session>.jsonl`. Token-Monitor liest diese Dateien inkrementell (Cursor-basiert) und füttert sie in dieselben Tabellen. **So siehst du sofort beim ersten Start dein Verhalten der letzten Wochen.**
+
+### 3. OpenAI Codex JSONL-Rollouts
+
+Codex CLI legt Session-Rollouts unter `~/.codex/sessions/<yyyy>/<mm>/<dd>/rollout-<ts>-<uuid>.jsonl` ab. Token-Monitor liest die kumulativen Token-Counts pro Turn (`event_msg.payload.type=token_count`) und mappt sie auf das gleiche Schema:
+
+| Codex-Feld | Token-Monitor-Feld |
+|---|---|
+| `input_tokens` − `cached_input_tokens` | `input_tokens` |
+| `cached_input_tokens` | `cache_read_tokens` |
+| `output_tokens` + `reasoning_output_tokens` | `output_tokens` |
+
+Tool-Calls werden aus `exec_command_end`-Events (Bash) und `response_item / function_call`-Records erzeugt. Das aktive Modell kommt aus `turn_context.model`.
 
 ## Optimierungs-Regeln
 
@@ -141,7 +158,7 @@ Jede Empfehlung enthält:
 
 ## Preise anpassen
 
-`pricing.json` enthält die USD-Raten pro 1M Tokens je Modell. Standardwerte basieren auf den öffentlichen Anthropic-Preisen (Stand 2026-05). Wenn du andere Konditionen hast (z.B. Enterprise-Rabatt, Bedrock, Vertex), editiere die Datei und starte das Tool neu:
+`pricing.json` enthält die USD-Raten pro 1M Tokens je Modell. Standardwerte basieren auf den öffentlichen Listenpreisen von Anthropic und OpenAI (Stand 2026-05). Wenn du **Codex Plus / Pro** (Flatrate) oder andere Konditionen (Enterprise-Rabatt, Bedrock, Vertex, OpenAI Azure-Tier) hast, editiere die Datei und starte das Tool neu — die ausgewiesenen Kosten zeigen dann nur den _äquivalenten_ Pay-per-Use-Wert, was hilft, das Subscription-Verhältnis abzuschätzen.
 
 ```json
 {
@@ -156,7 +173,9 @@ Jede Empfehlung enthält:
 
 ## FAQ
 
-**Kann ich es ohne OTel benutzen?** Ja. Wenn du `setup.ps1` _nicht_ ausführst oder per `teardown.ps1` die Variablen wieder entfernst, läuft trotzdem der JSONL-Importer und du siehst alle Session-Daten aus `~/.claude/projects/`.
+**Kann ich es ohne OTel benutzen?** Ja. Wenn du `setup.ps1` _nicht_ ausführst oder per `teardown.ps1` die Variablen wieder entfernst, läuft trotzdem der JSONL-Importer und du siehst alle Session-Daten aus `~/.claude/projects/` und `~/.codex/sessions/`.
+
+**Kann ich Codex deaktivieren?** Ja — setze `TOKEN_MONITOR_CODEX_SESSIONS_DIR` auf einen nicht-existierenden Pfad (z.B. `C:\\nope`), dann scannt der Codex-Importer nichts. Gleiches für Claude über `TOKEN_MONITOR_CLAUDE_PROJECTS_DIR`.
 
 **Geht das auch unter macOS/Linux?** Der Python-Code ist plattformneutral. Nur die `.ps1`-Skripte sind Windows-spezifisch — auf macOS/Linux müsstest du die Env-Variablen manuell exportieren und `uvicorn app.main:app --host 127.0.0.1 --port 8765` selber starten.
 

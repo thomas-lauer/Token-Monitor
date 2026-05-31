@@ -1,7 +1,9 @@
 """Dashboard JSON API.
 
-All endpoints accept a `range` query parameter selecting the lookback window:
-  '24h' (default), '7d', '30d', '90d', 'all'.
+All endpoints accept:
+  - `range`: lookback window, one of '24h' (default for most), '7d' (default
+    for charts), '30d', '90d', 'all'.
+  - `provider`: optional filter — 'anthropic', 'openai', or omitted (all).
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ _RANGE_MAP = {
     "30d": timedelta(days=30),
     "90d": timedelta(days=90),
 }
+_VALID_PROVIDERS = {"anthropic", "openai"}
 
 
 def _since(range_: str) -> Optional[str]:
@@ -34,16 +37,35 @@ def _since(range_: str) -> Optional[str]:
     return (datetime.now(timezone.utc) - delta).isoformat()
 
 
-def _range_clause(range_: str, ts_col: str = "timestamp") -> tuple[str, list]:
+def _where_clause(
+    range_: str,
+    provider: Optional[str] = None,
+    ts_col: str = "timestamp",
+) -> tuple[str, list]:
+    """Build a `WHERE` clause covering both range and provider filters."""
+    parts: list[str] = []
+    params: list = []
     since = _since(range_)
-    if since is None:
-        return "", []
-    return f" WHERE {ts_col} >= ? ", [since]
+    if since is not None:
+        parts.append(f"{ts_col} >= ?")
+        params.append(since)
+    if provider:
+        if provider not in _VALID_PROVIDERS:
+            raise HTTPException(400, f"Unknown provider: {provider}")
+        parts.append("provider = ?")
+        params.append(provider)
+    if not parts:
+        return "", params
+    return " WHERE " + " AND ".join(parts) + " ", params
 
 
 @router.get("/health")
 def health() -> dict:
     with db.read_conn() as conn:
+        per_provider = conn.execute(
+            "SELECT provider, COUNT(*) AS n, MAX(timestamp) AS latest "
+            "FROM api_requests GROUP BY provider"
+        ).fetchall()
         total = conn.execute("SELECT COUNT(*) AS n FROM api_requests").fetchone()["n"]
         latest = conn.execute(
             "SELECT MAX(timestamp) AS t FROM api_requests"
@@ -54,14 +76,23 @@ def health() -> dict:
         "db_size_bytes": DB_PATH.stat().st_size if DB_PATH.exists() else 0,
         "api_request_count": total,
         "latest_event_ts": latest,
-        "last_jsonl_scan_at": db.get_meta("last_jsonl_scan_at"),
-        "last_jsonl_files_seen": db.get_meta("last_jsonl_files_seen"),
+        "providers": [
+            {"provider": r["provider"], "requests": r["n"], "latest": r["latest"]}
+            for r in per_provider
+        ],
+        "last_claude_scan_at": db.get_meta("last_jsonl_scan_at"),
+        "last_claude_files_seen": db.get_meta("last_jsonl_files_seen"),
+        "last_codex_scan_at": db.get_meta("last_codex_scan_at"),
+        "last_codex_files_seen": db.get_meta("last_codex_files_seen"),
     }
 
 
 @router.get("/summary")
-def summary(range: str = Query("24h")) -> dict:
-    where, params = _range_clause(range)
+def summary(
+    range: str = Query("24h"),
+    provider: Optional[str] = Query(None),
+) -> dict:
+    where, params = _where_clause(range, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -89,6 +120,19 @@ def summary(range: str = Query("24h")) -> dict:
             params,
         ).fetchone()
 
+        per_provider = conn.execute(
+            f"""
+            SELECT provider,
+                   COALESCE(SUM(cost_usd),0) AS cost_usd,
+                   COALESCE(SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens),0) AS tokens,
+                   COUNT(*) AS requests
+            FROM api_requests
+            {where}
+            GROUP BY provider
+            """,
+            params,
+        ).fetchall()
+
     total_tokens = (
         row["input_tokens"] + row["output_tokens"]
         + row["cache_read_tokens"] + row["cache_creation_tokens"]
@@ -100,6 +144,7 @@ def summary(range: str = Query("24h")) -> dict:
 
     return {
         "range": range,
+        "provider": provider,
         "input_tokens": row["input_tokens"],
         "output_tokens": row["output_tokens"],
         "cache_read_tokens": row["cache_read_tokens"],
@@ -113,6 +158,11 @@ def summary(range: str = Query("24h")) -> dict:
             row["total_cost_usd"] / row["sessions"] if row["sessions"] else 0.0
         ),
         "top_model": top_model["model"] if top_model else None,
+        "providers": [
+            {"provider": r["provider"], "cost_usd": r["cost_usd"],
+             "tokens": r["tokens"], "requests": r["requests"]}
+            for r in per_provider
+        ],
     }
 
 
@@ -121,9 +171,49 @@ def timeseries(
     range: str = Query("7d"),
     metric: str = Query("tokens", regex="^(tokens|cost)$"),
     bucket: str = Query("day", regex="^(hour|day)$"),
+    provider: Optional[str] = Query(None),
+    groupBy: Optional[str] = Query(None, regex="^(provider)$"),
 ) -> dict:
-    where, params = _range_clause(range)
+    where, params = _where_clause(range, provider)
     bucket_expr = "substr(timestamp, 1, 13)" if bucket == "hour" else "substr(timestamp, 1, 10)"
+
+    if groupBy == "provider":
+        with db.read_conn() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  {bucket_expr} AS bucket,
+                  provider,
+                  SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
+                  SUM(cost_usd) AS cost_usd
+                FROM api_requests
+                {where}
+                GROUP BY bucket, provider
+                ORDER BY bucket ASC
+                """,
+                params,
+            ).fetchall()
+
+        buckets: list[str] = []
+        providers: list[str] = []
+        seen_buckets: dict[str, dict[str, float]] = {}
+        for r in rows:
+            b = r["bucket"]
+            if b not in seen_buckets:
+                seen_buckets[b] = {}
+                buckets.append(b)
+            if r["provider"] not in providers:
+                providers.append(r["provider"])
+            seen_buckets[b][r["provider"]] = (
+                r["tokens"] if metric == "tokens" else round(r["cost_usd"] or 0.0, 4)
+            )
+        return {
+            "labels": buckets,
+            "series": [
+                {"name": p, "data": [seen_buckets[b].get(p, 0) for b in buckets]}
+                for p in providers
+            ],
+        }
 
     with db.read_conn() as conn:
         rows = conn.execute(
@@ -164,24 +254,26 @@ def breakdown(
     range: str = Query("7d"),
     dim: str = Query("model"),
     limit: int = Query(20, ge=1, le=200),
+    provider: Optional[str] = Query(None),
 ) -> dict:
     col_map = {
-        "model":   "model",
-        "session": "session_id",
-        "project": "project_path",
-        "skill":   "skill_name",
-        "agent":   "agent_name",
-        "mcp":     "mcp_server",
-        "source":  "source",
-        "speed":   "speed",
-        "effort":  "effort",
+        "model":    "model",
+        "session":  "session_id",
+        "project":  "project_path",
+        "skill":    "skill_name",
+        "agent":    "agent_name",
+        "mcp":      "mcp_server",
+        "source":   "source",
+        "speed":    "speed",
+        "effort":   "effort",
         "query_source": "query_source",
+        "provider": "provider",
     }
     col = col_map.get(dim)
     if not col:
         raise HTTPException(400, f"Unknown dim: {dim}")
 
-    where, params = _range_clause(range)
+    where, params = _where_clause(range, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
@@ -209,8 +301,12 @@ def breakdown(
 
 
 @router.get("/tools")
-def tools(range: str = Query("7d"), limit: int = Query(30, ge=1, le=200)) -> dict:
-    where, params = _range_clause(range)
+def tools(
+    range: str = Query("7d"),
+    limit: int = Query(30, ge=1, le=200),
+    provider: Optional[str] = Query(None),
+) -> dict:
+    where, params = _where_clause(range, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
@@ -245,14 +341,19 @@ def tools(range: str = Query("7d"), limit: int = Query(30, ge=1, le=200)) -> dic
 
 
 @router.get("/sessions")
-def sessions(range: str = Query("7d"), limit: int = Query(100, ge=1, le=500)) -> dict:
-    where, params = _range_clause(range)
+def sessions(
+    range: str = Query("7d"),
+    limit: int = Query(100, ge=1, le=500),
+    provider: Optional[str] = Query(None),
+) -> dict:
+    where, params = _where_clause(range, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
             SELECT
               session_id,
               project_path,
+              provider,
               MIN(timestamp) AS started_at,
               MAX(timestamp) AS last_seen_at,
               SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) AS tokens,
@@ -272,6 +373,7 @@ def sessions(range: str = Query("7d"), limit: int = Query(100, ge=1, le=500)) ->
             {
                 "session_id": r["session_id"],
                 "project_path": r["project_path"],
+                "provider": r["provider"],
                 "started_at": r["started_at"],
                 "last_seen_at": r["last_seen_at"],
                 "tokens": r["tokens"] or 0,
@@ -292,6 +394,7 @@ def session_detail(session_id: str) -> dict:
             SELECT
               session_id,
               project_path,
+              provider,
               MIN(timestamp) AS started_at,
               MAX(timestamp) AS last_seen_at,
               SUM(input_tokens) AS input_tokens,
@@ -310,7 +413,7 @@ def session_detail(session_id: str) -> dict:
             """
             SELECT timestamp, model, input_tokens, output_tokens,
                    cache_read_tokens, cache_creation_tokens, cost_usd,
-                   query_source, agent_name, skill_name, source
+                   query_source, agent_name, skill_name, source, provider
             FROM api_requests
             WHERE session_id = ?
             ORDER BY timestamp ASC
@@ -336,9 +439,12 @@ def session_detail(session_id: str) -> dict:
 
 
 @router.get("/heatmap")
-def heatmap(range: str = Query("30d")) -> dict:
+def heatmap(
+    range: str = Query("30d"),
+    provider: Optional[str] = Query(None),
+) -> dict:
     """Tokens by day-of-week × hour-of-day."""
-    where, params = _range_clause(range)
+    where, params = _where_clause(range, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
@@ -356,6 +462,9 @@ def heatmap(range: str = Query("30d")) -> dict:
 
 
 @router.get("/recommendations")
-def recommendations_endpoint(range: str = Query("7d")) -> dict:
+def recommendations_endpoint(
+    range: str = Query("7d"),
+    provider: Optional[str] = Query(None),
+) -> dict:
     since = _since(range)
-    return {"range": range, "items": recommendations(since)}
+    return {"range": range, "provider": provider, "items": recommendations(since, provider)}

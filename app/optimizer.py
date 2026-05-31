@@ -26,10 +26,18 @@ class Recommendation:
     evidence: dict | None = None
 
 
-def _params_for(since: Optional[str]) -> tuple[str, list]:
-    if since is None:
-        return "", []
-    return " AND timestamp >= ? ", [since]
+def _params_for(since: Optional[str], provider: Optional[str] = None) -> tuple[str, list]:
+    parts: list[str] = []
+    params: list = []
+    if since is not None:
+        parts.append("timestamp >= ?")
+        params.append(since)
+    if provider:
+        parts.append("provider = ?")
+        params.append(provider)
+    if not parts:
+        return "", params
+    return " AND " + " AND ".join(parts), params
 
 
 def _window_days(since: Optional[str]) -> float:
@@ -48,8 +56,8 @@ def _scale_to_month(window_days: float, observed_value: float) -> float:
     return observed_value * (30.0 / window_days)
 
 
-def _rule_low_cache_hit_rate(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_low_cache_hit_rate(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -91,8 +99,8 @@ def _rule_low_cache_hit_rate(since: Optional[str], window_days: float) -> list[R
     )]
 
 
-def _rule_opus_for_short_tasks(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_opus_for_short_tasks(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -127,8 +135,8 @@ def _rule_opus_for_short_tasks(since: Optional[str], window_days: float) -> list
     )]
 
 
-def _rule_high_effort_overuse(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_high_effort_overuse(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -160,8 +168,8 @@ def _rule_high_effort_overuse(since: Optional[str], window_days: float) -> list[
     )]
 
 
-def _rule_long_session_without_compact(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_long_session_without_compact(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         sessions = conn.execute(
             f"""
@@ -199,8 +207,8 @@ def _rule_long_session_without_compact(since: Optional[str], window_days: float)
     )]
 
 
-def _rule_subagent_overload(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_subagent_overload(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -232,8 +240,8 @@ def _rule_subagent_overload(since: Optional[str], window_days: float) -> list[Re
     )]
 
 
-def _rule_failing_tools(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_failing_tools(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
@@ -265,8 +273,8 @@ def _rule_failing_tools(since: Optional[str], window_days: float) -> list[Recomm
     )]
 
 
-def _rule_oversize_reads(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_oversize_reads(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         rows = conn.execute(
             f"""
@@ -293,8 +301,8 @@ def _rule_oversize_reads(since: Optional[str], window_days: float) -> list[Recom
     )]
 
 
-def _rule_fast_mode_overuse(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_fast_mode_overuse(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -325,8 +333,8 @@ def _rule_fast_mode_overuse(since: Optional[str], window_days: float) -> list[Re
     )]
 
 
-def _rule_output_heavy(since: Optional[str], window_days: float) -> list[Recommendation]:
-    extra, params = _params_for(since)
+def _rule_output_heavy(since: Optional[str], window_days: float, provider: Optional[str]) -> list[Recommendation]:
+    extra, params = _params_for(since, provider)
     with db.read_conn() as conn:
         row = conn.execute(
             f"""
@@ -369,12 +377,12 @@ _RULES = [
 ]
 
 
-def recommendations(since: Optional[str]) -> list[dict]:
+def recommendations(since: Optional[str], provider: Optional[str] = None) -> list[dict]:
     window_days = _window_days(since)
     out: list[Recommendation] = []
     for rule in _RULES:
         try:
-            out.extend(rule(since, window_days))
+            out.extend(rule(since, window_days, provider))
         except Exception:
             continue
     out.sort(key=lambda r: r.est_monthly_savings_usd, reverse=True)
